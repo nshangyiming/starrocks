@@ -2,6 +2,7 @@
 
 package com.starrocks.sql.analyzer;
 
+import com.google.common.collect.Lists;
 import com.starrocks.analysis.UserIdentity;
 import com.starrocks.authentication.AuthenticationManager;
 import com.starrocks.privilege.PrivilegeManager;
@@ -14,6 +15,8 @@ import com.starrocks.utframe.UtFrameUtils;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
+
+import java.util.List;
 
 public class PrivilegeCheckerV2Test {
     private static StarRocksAssert starRocksAssert;
@@ -57,7 +60,8 @@ public class PrivilegeCheckerV2Test {
         CreateUserStmt createUserStmt =
                 (CreateUserStmt) UtFrameUtils.parseStmtWithNewParser(createUserSql, starRocksAssert.getCtx());
 
-        AuthenticationManager authenticationManager = starRocksAssert.getCtx().getGlobalStateMgr().getAuthenticationManager();
+        AuthenticationManager authenticationManager =
+                starRocksAssert.getCtx().getGlobalStateMgr().getAuthenticationManager();
         authenticationManager.createUser(createUserStmt);
         testUser = createUserStmt.getUserIdent();
 
@@ -67,7 +71,8 @@ public class PrivilegeCheckerV2Test {
         testUser2 = createUserStmt.getUserIdent();
     }
 
-    private static void verifyGrantRevoke(String sql, String grantSql, String revokeSql, String expectError) throws Exception {
+    private static void verifyGrantRevoke(String sql, String grantSql, String revokeSql,
+                                          String expectError) throws Exception {
         StatementBase statement = UtFrameUtils.parseStmtWithNewParser(sql, starRocksAssert.getCtx());
 
         // 1. before grant: access denied
@@ -76,7 +81,7 @@ public class PrivilegeCheckerV2Test {
             PrivilegeCheckerV2.check(statement, starRocksAssert.getCtx());
             Assert.fail();
         } catch (SemanticException e) {
-            System.out.println(e.getMessage());
+            System.out.println(e.getMessage() + ", sql: " + sql);
             Assert.assertTrue(e.getMessage().contains(expectError));
         }
 
@@ -98,7 +103,7 @@ public class PrivilegeCheckerV2Test {
             PrivilegeCheckerV2.check(statement, starRocksAssert.getCtx());
             Assert.fail();
         } catch (SemanticException e) {
-            System.out.println(e.getMessage());
+            System.out.println(e.getMessage() + ", sql: " + sql);
             Assert.assertTrue(e.getMessage().contains(expectError));
         }
     }
@@ -181,5 +186,64 @@ public class PrivilegeCheckerV2Test {
                 "grant drop on all resources to test",
                 "revoke drop on all resources from test",
                 "Access denied; you need (at least one of) the DROP privilege(s) for this operation");
+    }
+
+    @Test
+    public void testDatabaseStmt() throws Exception {
+        final String testDbName = "db_for_db_stmt_test";
+        starRocksAssert.withDatabase(testDbName);
+        String createTblStmtStr = "create table " + testDbName +
+                ".tbl1(k1 varchar(32), k2 varchar(32), k3 varchar(32), k4 int) " +
+                "AGGREGATE KEY(k1, k2,k3,k4) distributed by hash(k1) buckets 3 properties('replication_num' = '1');";
+        starRocksAssert.withTable(createTblStmtStr);
+
+        List<String> statements = Lists.newArrayList();
+        statements.add("use " + testDbName + ";");
+        statements.add("show create database " + testDbName + ";");
+        for (String stmt : statements) {
+            // Test `use database` | `show create database xxx`: check any privilege on db
+            verifyGrantRevoke(
+                    stmt,
+                    "grant DROP on database " + testDbName + " to test",
+                    "revoke DROP on database " + testDbName + " from test",
+                    "Access denied for user 'test' to database '" + testDbName + "'");
+            verifyGrantRevoke(
+                    stmt,
+                    "grant CREATE_FUNCTION on database " + testDbName + " to test",
+                    "revoke CREATE_FUNCTION on database " + testDbName + " from test",
+                    "Access denied for user 'test' to database '" + testDbName + "'");
+            verifyGrantRevoke(
+                    stmt,
+                    "grant ALTER on database " + testDbName + " to test",
+                    "revoke ALTER on database " + testDbName + " from test",
+                    "Access denied for user 'test' to database '" + testDbName + "'");
+            // Test `use database` | `show create database xxx`: check any privilege on tables under db
+            verifyGrantRevoke(
+                    stmt,
+                    "grant select on " + testDbName + ".tbl1 to test",
+                    "revoke select on " + testDbName + ".tbl1 from test",
+                    "Access denied for user 'test' to database '" + testDbName + "'");
+        }
+
+        // Test `recover database xxx`: check DROP on db and CREATE_DATABASE on internal catalog
+        // TODO(yiming): check for CREATE_DATABASE on internal catalog after catalog is added
+        verifyGrantRevoke(
+                "recover database " + testDbName + ";",
+                "grant DROP on database " + testDbName + " to test",
+                "revoke DROP on database " + testDbName + " from test",
+                "Access denied for user 'test' to database '" + testDbName + "'");
+
+        // Test `alter database xxx set...`: check ALTER on db
+        verifyGrantRevoke(
+                "alter database " + testDbName + " set data quota 10T;",
+                "grant ALTER on database " + testDbName + " to test",
+                "revoke ALTER on database " + testDbName + " from test",
+                "Access denied for user 'test' to database '" + testDbName + "'");
+
+        verifyGrantRevoke(
+                "alter database " + testDbName + " set replica quota 102400;",
+                "grant ALTER on database " + testDbName + " to test",
+                "revoke ALTER on database " + testDbName + " from test",
+                "Access denied for user 'test' to database '" + testDbName + "'");
     }
 }
