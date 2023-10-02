@@ -767,4 +767,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
         }
         return ret;
     }
+
+    public boolean isTable() {
+        return !type.equals(TableType.MATERIALIZED_VIEW) &&
+                !type.equals(TableType.CLOUD_NATIVE_MATERIALIZED_VIEW) &&
+                !type.equals(TableType.VIEW);
+    }
 }
